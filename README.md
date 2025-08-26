@@ -13,6 +13,9 @@ An interactive REPL for monitoring CrowdStrike Falcon API alerts in real-time.
 - 🔐 Secure credential storage and token management
 - ⚡ Optimized API usage with rate limiting and error handling
 
+## Interface
+<img width="1884" height="740" alt="image2" src="https://github.com/user-attachments/assets/fedf8504-22d7-4443-abfb-1ddf337e0126" />
+
 ## Installation
 
 ### Via pipx (Recommended)
@@ -49,7 +52,6 @@ pip install -e .
    ```
    keys> back
    > connect
-   > run
    ```
 
 ## Usage
@@ -58,8 +60,8 @@ pip install -e .
 
 **Root Menu:**
 - `keys` - Manage API connections
-- `connect` - Authenticate with Falcon API
-- `run` - Start alert monitoring
+- `connect` - Initial authentication to Falcon API
+- `run` - Resume alert monitoring on existing Falcon connection
 - `config` - Configure settings
 - `stats` - View alert statistics
 - `help` - Show help information
@@ -125,3 +127,4 @@ MIT License - see LICENSE file for details.
 ## Contributing
 
 Contributions welcome! Please feel free to submit a Pull Request.
+
