@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Set
+from typing import Set, List, Optional, Dict, Any
 
 try:
     from requests import RequestException
@@ -18,9 +18,10 @@ from ..models import Connection, AlertFilter, OutputFormat
 from ..utils.colors import Fore, Style
 from ..utils.spinner import TqdmSpinner
 from ..utils.time_helpers import now_utc, fql_time, fmt_ts, parse_iso_utc, pick_created_iso
-from .constants import ROOT_HELP_CONNECTED, ROOT_HELP_DISCONNECTED, KEYS_HELP, CONFIG_HELP, HELP_TOPICS
+from .constants import ROOT_HELP_CONNECTED, ROOT_HELP_DISCONNECTED, KEYS_HELP, CONFIG_HELP, HELP_TOPICS, DB_HELP
 from .display import generate_conn_id, mask_secret, _returned_to_root
 from .selector import select_index
+from ..database import AlertsDB
 
 
 class TalonREPL:
@@ -28,6 +29,9 @@ class TalonREPL:
     
     def __init__(self, state: TalonState):
         self.s = state
+        self.alert_id_cache = {}  # Map short IDs to full IDs
+        self.alerts_db = AlertsDB()  # Initialize database
+        self.new_alerts_count = 0   # Track new alerts in current session
 
     # ---------- Root REPL ----------
     def root_loop(self):
@@ -86,12 +90,18 @@ class TalonREPL:
                     self.keys_loop()
                     continue
 
+                if cmd == "db":
+                    self.db_loop()
+                    continue
+
                 if cmd.startswith("help "):
                     topic = cmd.split(" ", 1)[1].strip().lower()
                     print()  # blank line before topic help
-                    if self.s.connected and topic in ("keys", "config", "run", "exit", "help"):
+                    if topic in HELP_TOPICS:
+                        print(HELP_TOPICS[topic])
+                    elif self.s.connected and topic in ("keys", "config", "run", "exit", "help", "stats", "detail"):
                         print(ROOT_HELP_CONNECTED)
-                    elif (not self.s.connected) and topic in ("keys", "connect", "exit", "help"):
+                    elif (not self.s.connected) and topic in ("keys", "connect", "exit", "help", "detail"):
                         print(ROOT_HELP_DISCONNECTED)
                     else:
                         print("No help for that topic.")
@@ -105,8 +115,14 @@ class TalonREPL:
                     self.show_stats()
                     continue
 
+                if cmd == "detail":
+                    # Allow detail selection without requiring connection
+                    self.cmd_detail_select()
+                    continue
+
                 if cmd.startswith("detail "):
                     alert_id = cmd.split(" ", 1)[1].strip()
+                    # Try to show from database first, fall back to API if connected
                     self.show_alert_detail(alert_id)
                     continue
 
@@ -274,6 +290,13 @@ class TalonREPL:
                     print()  # extra blank line after help block
                     continue
 
+                if cmd.startswith("help "):
+                    topic = cmd.split(" ", 1)[1].strip().lower()
+                    print()  # newline before topic help
+                    print(HELP_TOPICS.get(topic, "No help for that topic."))
+                    print()  # extra blank line after topic help
+                    continue
+
                 # Single option: polling -> prompt directly
                 if cmd == "polling":
                     try:
@@ -299,14 +322,77 @@ class TalonREPL:
                         print("Must be an integer")
                     continue
 
-                if cmd == "output":
+                if cmd == "filter":
                     try:
-                        fmt = input("Output format [console/json/csv]: ").strip().lower()
-                        if fmt in ["console", "json", "csv"]:
-                            self.s.output_format = OutputFormat(fmt)
-                            print(f"[+] Output format set to {fmt}")
+                        print("Current filter settings:")
+                        f = self.s.alert_filter
+                        print(f"  Severity min: {f.severity_min or 'none'}")
+                        print(f"  Product: {f.product or 'any'}")
+                        print(f"  Hostname: {f.hostname or 'any'}")
+                        print(f"  Status: {f.status or 'any'}")
+                        print(f"  Keywords: {', '.join(f.keywords) if f.keywords else 'none'}")
+                        print()
+                        
+                        choice = input("Configure [s]everity/[p]roduct/[h]ostname/s[t]atus/[k]eywords/[c]lear/[q]uit: ").strip().lower()
+                        
+                        if choice == 's':
+                            val = input("Minimum severity (empty to clear): ").strip()
+                            if val:
+                                try:
+                                    self.s.alert_filter.severity_min = int(val)
+                                    print(f"[+] Minimum severity set to {val}")
+                                except ValueError:
+                                    print("Must be a number")
+                            else:
+                                self.s.alert_filter.severity_min = None
+                                print("[+] Severity filter cleared")
+                        elif choice == 'p':
+                            val = input("Product filter (empty to clear): ").strip()
+                            self.s.alert_filter.product = val if val else None
+                            print(f"[+] Product filter {'set to ' + val if val else 'cleared'}")
+                        elif choice == 'h':
+                            val = input("Hostname filter (empty to clear): ").strip()
+                            self.s.alert_filter.hostname = val if val else None
+                            print(f"[+] Hostname filter {'set to ' + val if val else 'cleared'}")
+                        elif choice == 't':
+                            val = input("Status filter (empty to clear): ").strip()
+                            self.s.alert_filter.status = val if val else None
+                            print(f"[+] Status filter {'set to ' + val if val else 'cleared'}")
+                        elif choice == 'k':
+                            val = input("Keywords (comma-separated, empty to clear): ").strip()
+                            if val:
+                                self.s.alert_filter.keywords = [k.strip() for k in val.split(',') if k.strip()]
+                                print(f"[+] Keywords set to: {', '.join(self.s.alert_filter.keywords)}")
+                            else:
+                                self.s.alert_filter.keywords = []
+                                print("[+] Keywords cleared")
+                        elif choice == 'c':
+                            from ..models.filters import AlertFilter
+                            self.s.alert_filter = AlertFilter()
+                            print("[+] All filters cleared")
+                        
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        if isinstance(sys.exc_info()[1], KeyboardInterrupt):
+                            raise
+                    continue
+
+                if cmd == "lookback":
+                    try:
+                        val = input("Set lookback range in minutes [default: 10]: ").strip()
+                        if not val:
+                            self.s.lookback_minutes = 10
+                            print("[+] Lookback set to 10 minutes")
                         else:
-                            print("Invalid format")
+                            try:
+                                n = int(val)
+                                if n < 1:
+                                    print("Must be >= 1 minute")
+                                    continue
+                                self.s.lookback_minutes = n
+                                print(f"[+] Lookback set to {n} minutes")
+                            except ValueError:
+                                print("Must be an integer")
                     except (EOFError, KeyboardInterrupt):
                         print()
                         if isinstance(sys.exc_info()[1], KeyboardInterrupt):
@@ -377,7 +463,7 @@ class TalonREPL:
     def _watch(self, client: FalconClient):
         """Main alert watching loop."""
         # Start with last 10 minutes of *created* alerts, then only newly created ones.
-        lookback_min = 10
+        lookback_min = self.s.lookback_minutes
         created_since_dt = now_utc() - timedelta(minutes=lookback_min)
         last_created_iso = fql_time(created_since_dt)
         seen_ids: Set[str] = set()
@@ -402,7 +488,15 @@ class TalonREPL:
 
                             max_created_seen = None
                             for a in alerts:
-                                aid = a.get("id") or a.get("composite_id") or "unknown-id"
+                                aid_full = a.get("composite_id") or a.get("id") or "unknown-id"
+                                if ':ind:' in aid_full:
+                                    aid = aid_full[aid_full.find('ind:'):]  # Extract display ID
+                                elif ':det:' in aid_full:
+                                    aid = aid_full[aid_full.find('det:'):]  # Extract from 'det:' onwards
+                                else:
+                                    aid = aid_full
+                                # Store the ORIGINAL full ID, not the extracted one
+                                self.alert_id_cache[aid] = aid_full  # This should be the original API response ID
                                 if aid in seen_ids:
                                     continue  # hard de-dupe
                                 
@@ -468,6 +562,11 @@ class TalonREPL:
                                 else:
                                     print(line)
                                 
+                                # Store in database and count if new
+                                is_new = self.alerts_db.store_alert(a, aid, aid_full)
+                                if is_new:
+                                    self.new_alerts_count += 1
+                                
                                 # Log to file if enabled
                                 if self.s.log_file:
                                     try:
@@ -495,6 +594,9 @@ class TalonREPL:
                     time.sleep(5)
         except KeyboardInterrupt:
             print()
+            if self.new_alerts_count > 0:
+                print(f"Added {Fore.GREEN}{Style.BRIGHT}{self.new_alerts_count}{Style.RESET_ALL} new detections to the database")
+                self.new_alerts_count = 0  # Reset counter
             _returned_to_root()
             return
         except Exception as e:
@@ -504,55 +606,411 @@ class TalonREPL:
             return
 
     def show_stats(self):
-        """Show alert statistics."""
-        stats = self.s.alert_stats
-        print(f"\n📊 Alert Statistics (since {fmt_ts(stats.last_reset)}):")
-        print(f"Total alerts: {stats.total_alerts}")
+        """Show daily alert statistics from database."""
+        from ..utils.time_helpers import now_utc
         
-        if stats.alerts_by_severity:
+        today = now_utc().strftime("%Y-%m-%d")
+        stats = self.alerts_db.get_daily_stats(today)
+        
+        print(f"\nAlert Statistics ({stats['date']}):")
+        print(f"Total alerts: {stats['total']}")
+        
+        if stats['by_severity']:
             print("\nBy Severity:")
-            for sev, count in sorted(stats.alerts_by_severity.items()):
+            for sev, count in sorted(stats['by_severity'].items(), reverse=True):
                 print(f"  {sev}: {count}")
         
-        if stats.alerts_by_product:
+        if stats['by_product']:
             print("\nBy Product:")
-            for prod, count in sorted(stats.alerts_by_product.items()):
+            for prod, count in sorted(stats['by_product'].items(), key=lambda x: x[1], reverse=True):
                 print(f"  {prod}: {count}")
         print()
 
     def show_alert_detail(self, alert_id: str):
         """Show detailed information about a specific alert."""
+        # First try to get from database
+        db_alert = self.alerts_db.get_alert_by_short_id(alert_id)
+        
+        if db_alert:
+            # Display from database (no API call needed)
+            self._show_alert_from_data(db_alert, alert_id)
+            return
+        
+        # If not in database and we're connected, try API
+        if not self.s.connected or not self.s.client:
+            print(f"Alert {alert_id} not found in database and not connected to API")
+            return
+        
+        # Try cache first, then API
+        full_alert_id = self._find_full_alert_id(alert_id)
+        
         try:
-            alerts = self.s.client.fetch_alerts([alert_id])
+            alerts = self.s.client.fetch_alerts([full_alert_id])
             if not alerts:
                 print(f"Alert {alert_id} not found")
                 return
             
             alert = alerts[0]
-            print(f"\n🔍 Alert Details: {alert_id}")
-            print("=" * 50)
+            self._show_alert_from_data(alert, alert_id)
             
-            # Display key fields in organized format
-            fields = [
-                ("Name", alert.get("name")),
-                ("Description", alert.get("description")),
-                ("Severity", alert.get("severity")),
-                ("Status", alert.get("status")),
-                ("Product", alert.get("product")),
-                ("Created", alert.get("created_timestamp")),
-                ("Updated", alert.get("updated_timestamp")),
-            ]
-            
-            for label, value in fields:
-                if value:
-                    print(f"{label:12}: {value}")
-            
-            # Device info
-            device = alert.get("device", {})
-            if isinstance(device, dict) and device:
-                print(f"{'Hostname':12}: {device.get('hostname', 'N/A')}")
-                print(f"{'Device ID':12}: {device.get('device_id', 'N/A')}")
-            
-            print()
         except Exception as e:
             print(f"Error fetching alert details: {e}")
+
+    def _show_alert_from_data(self, alert: dict, alert_id: str):
+        """Display alert details from alert data (database or API)."""
+        # Header with color-coded severity
+        sev = alert.get("severity", 0)
+        try:
+            sev_int = int(sev)
+            if sev_int >= 60:
+                sev_color = Fore.RED
+            elif sev_int >= 30:
+                sev_color = Fore.YELLOW
+            else:
+                sev_color = Fore.GREEN
+        except:
+            sev_color = Fore.WHITE
+        
+        print(f"\n{Style.BRIGHT}Alert Details{Style.RESET_ALL}")
+        print("=" * 80)
+        print(f"{Style.BRIGHT}ID:{Style.RESET_ALL} {Fore.BLUE}{alert_id}{Style.RESET_ALL}")
+        print()
+        
+        # Basic Information
+        print(f"{Style.BRIGHT}BASIC INFORMATION{Style.RESET_ALL}")
+        print("-" * 40)
+        basic_fields = [
+            ("Name", alert.get("name")),
+            ("Description", alert.get("description")),
+            ("Type", alert.get("type")),
+            ("Severity", f"{sev_color}{sev}{Style.RESET_ALL}"),
+            ("Status", f"{Fore.YELLOW}{alert.get('status')}{Style.RESET_ALL}"),
+            ("Product", f"{Fore.GREEN}{alert.get('product')}{Style.RESET_ALL}"),
+            ("Created", self._format_timestamp(alert.get("created_timestamp"))),
+            ("Updated", self._format_timestamp(alert.get("updated_timestamp"))),
+            ("Confidence", alert.get("confidence")),
+        ]
+        
+        for label, value in basic_fields:
+            if value:
+                print(f"  {label:12}: {value}")
+        print()
+        
+        # Device Information
+        device = alert.get("device", {})
+        if isinstance(device, dict) and device:
+            print(f"{Style.BRIGHT}DEVICE INFORMATION{Style.RESET_ALL}")
+            print("-" * 40)
+            device_fields = [
+                ("Hostname", device.get("hostname")),
+                ("Device ID", device.get("device_id")),
+                ("External IP", device.get("external_ip")),
+                ("Internal IP", device.get("local_ip")),
+                ("MAC Address", device.get("mac_address")),
+                ("OS Version", device.get("os_version")),
+                ("Domain", device.get("machine_domain")),
+                ("Agent Version", device.get("agent_version")),
+                ("First Seen", self._format_timestamp(device.get("first_seen"))),
+                ("Last Seen", self._format_timestamp(device.get("last_seen"))),
+            ]
+            
+            for label, value in device_fields:
+                if value:
+                    print(f"  {label:13}: {Fore.CYAN}{value}{Style.RESET_ALL}")
+            print()
+        
+        # Process Information
+        processes = alert.get("processes", [])
+        if processes:
+            print(f"{Style.BRIGHT}⚙️  PROCESS INFORMATION{Style.RESET_ALL}")
+            print("-" * 40)
+            for i, proc in enumerate(processes[:3]):  # Show first 3 processes
+                if isinstance(proc, dict):
+                    print(f"  Process {i+1}:")
+                    proc_fields = [
+                        ("  Command Line", proc.get("command_line")),
+                        ("  File Path", proc.get("file_name")),
+                        ("  SHA256", proc.get("sha256")),
+                        ("  MD5", proc.get("md5")),
+                        ("  PID", proc.get("process_id")),
+                        ("  Parent PID", proc.get("parent_process_id")),
+                        ("  User", proc.get("user_name")),
+                    ]
+                    
+                    for label, value in proc_fields:
+                        if value:
+                            print(f"    {label:15}: {Fore.MAGENTA}{value}{Style.RESET_ALL}")
+                    print()
+        
+        # File Information
+        files = alert.get("files", [])
+        if files:
+            print(f"{Style.BRIGHT}📁 FILE INFORMATION{Style.RESET_ALL}")
+            print("-" * 40)
+            for i, file_info in enumerate(files[:3]):  # Show first 3 files
+                if isinstance(file_info, dict):
+                    print(f"  File {i+1}:")
+                    file_fields = [
+                        ("  File Path", file_info.get("file_path")),
+                        ("  File Name", file_info.get("file_name")),
+                        ("  SHA256", file_info.get("sha256")),
+                        ("  MD5", file_info.get("md5")),
+                        ("  File Size", file_info.get("file_size")),
+                        ("  File Type", file_info.get("file_type")),
+                        ("  Reputation", file_info.get("reputation")),
+                    ]
+                    
+                    for label, value in file_fields:
+                        if value:
+                            color = Fore.RED if label == "  Reputation" and str(value).lower() in ["malicious", "suspicious"] else Fore.MAGENTA
+                            print(f"    {label:15}: {color}{value}{Style.RESET_ALL}")
+                    print()
+        
+        # Network Information
+        network = alert.get("network", {})
+        if isinstance(network, dict) and network:
+            print(f"{Style.BRIGHT}🌐 NETWORK INFORMATION{Style.RESET_ALL}")
+            print("-" * 40)
+            network_fields = [
+                ("Remote IP", network.get("remote_ip")),
+                ("Remote Port", network.get("remote_port")),
+                ("Local IP", network.get("local_ip")),
+                ("Local Port", network.get("local_port")),
+                ("Protocol", network.get("protocol")),
+                ("Domain", network.get("domain")),
+                ("URL", network.get("url")),
+            ]
+            
+            for label, value in network_fields:
+                if value:
+                    print(f"  {label:12}: {Fore.CYAN}{value}{Style.RESET_ALL}")
+            print()
+        
+        # Raw Behaviors/Techniques
+        behaviors = alert.get("behaviors", [])
+        if behaviors:
+            print(f"{Style.BRIGHT}🎯 BEHAVIORS & TECHNIQUES{Style.RESET_ALL}")
+            print("-" * 40)
+            for behavior in behaviors[:5]:  # Show first 5 behaviors
+                if isinstance(behavior, dict):
+                    technique = behavior.get("technique")
+                    tactic = behavior.get("tactic")
+                    description = behavior.get("description")
+                    
+                    if technique:
+                        print(f"  • {Fore.RED}{technique}{Style.RESET_ALL}: {description or 'No description'}")
+                    if tactic:
+                        print(f"    Tactic: {Fore.YELLOW}{tactic}{Style.RESET_ALL}")
+                    
+                    # Display any MITRE IDs
+                    mitre_attack = behavior.get("mitre_attack", {})
+                    if isinstance(mitre_attack, dict):
+                        technique_id = mitre_attack.get("technique_id")
+                        tactic_id = mitre_attack.get("tactic_id")
+                        if technique_id:
+                            print(f"    MITRE Technique: {Fore.BLUE}{technique_id}{Style.RESET_ALL}")
+                        if tactic_id:
+                            print(f"    MITRE Tactic: {Fore.BLUE}{tactic_id}{Style.RESET_ALL}")
+                    print()
+        
+        # User Information
+        user_info = alert.get("user", {})
+        if isinstance(user_info, dict) and user_info:
+            print(f"{Style.BRIGHT}👤 USER INFORMATION{Style.RESET_ALL}")
+            print("-" * 40)
+            user_fields = [
+                ("Username", user_info.get("user_name")),
+                ("Domain", user_info.get("domain")),
+                ("SID", user_info.get("sid")),
+                ("Privileges", user_info.get("privileges")),
+            ]
+            
+            for label, value in user_fields:
+                if value:
+                    print(f"  {label:12}: {Fore.CYAN}{value}{Style.RESET_ALL}")
+            print()
+        
+        # Additional Context
+        self._display_additional_context(alert)
+        
+        print("=" * 80)
+        print()
+
+    def _format_timestamp(self, timestamp):
+        """Format timestamp for display."""
+        if not timestamp:
+            return None
+        try:
+            dt = parse_iso_utc(timestamp)
+            return fmt_ts(dt)
+        except:
+            return timestamp
+
+    def _display_additional_context(self, alert):
+        """Display additional contextual information."""
+        print(f"{Style.BRIGHT}ADDITIONAL CONTEXT{Style.RESET_ALL}")
+        print("-" * 40)
+        
+        # Risk score and confidence
+        confidence = alert.get("confidence")
+        if confidence:
+            conf_color = Fore.RED if int(confidence) > 80 else Fore.YELLOW if int(confidence) > 50 else Fore.GREEN
+            print(f"  Confidence: {conf_color}{confidence}%{Style.RESET_ALL}")
+        
+        # Tags
+        tags = alert.get("tags", [])
+        if tags:
+            print(f"  Tags: {', '.join([f'{Fore.CYAN}{tag}{Style.RESET_ALL}' for tag in tags])}")
+        
+        # Show any custom IOCs or indicators
+        iocs = alert.get("iocs", [])
+        if iocs:
+            print("  IOCs:")
+            for ioc in iocs[:5]:  # Show first 5 IOCs
+                if isinstance(ioc, dict):
+                    ioc_type = ioc.get("type", "Unknown")
+                    ioc_value = ioc.get("value", "")
+                    print(f"    • {Fore.RED}{ioc_type}{Style.RESET_ALL}: {ioc_value}")
+        
+        # Parent/related alerts
+        parent_id = alert.get("parent_cid")
+        if parent_id:
+            print(f"  Parent Alert: {Fore.BLUE}{parent_id}{Style.RESET_ALL}")
+        
+        print()
+
+    def _find_full_alert_id(self, alert_id: str) -> str:
+        """Find the full alert ID for a given alert ID."""
+        if alert_id in self.alert_id_cache:
+            return self.alert_id_cache[alert_id]
+        return alert_id
+
+    def cmd_detail_select(self):
+        """Allow user to select from recent alerts."""
+        recent_alerts = self.alerts_db.get_recent_alerts(20)
+        
+        if not recent_alerts:
+            print("No alerts found in database")
+            return
+        
+        options = []
+        for i, alert in enumerate(recent_alerts, 1):
+            sev = alert.get('severity', 0)
+            sev_color = Fore.RED if sev >= 60 else Fore.YELLOW if sev >= 30 else Fore.GREEN
+            
+            created = alert.get('created_timestamp', '')
+            if created:
+                try:
+                    from ..utils.time_helpers import parse_iso_utc, fmt_ts
+                    dt = parse_iso_utc(created)
+                    time_str = fmt_ts(dt)
+                except:
+                    time_str = created[:16] if len(created) > 16 else created
+            else:
+                time_str = 'Unknown'
+            
+            name = alert.get('name', 'Unknown')[:40]  # Truncate long names
+            hostname = alert.get('hostname', '-')
+            
+            option_text = f"[{time_str}] sev={sev_color}{sev}{Style.RESET_ALL} {hostname} :: {name}"
+            options.append(option_text)
+        
+        from .selector import select_index
+        selected_idx = select_index(options, title="Select alert for details")
+        
+        if selected_idx is not None:
+            selected_alert = recent_alerts[selected_idx]
+            self.show_alert_detail(selected_alert['short_id'])
+
+    def db_loop(self):
+        """Database management submenu."""
+        while True:
+            try:
+                line = input("db> ")
+            except EOFError:
+                print()
+                break
+            except KeyboardInterrupt:
+                print()
+                raise
+            
+            cmd = (line or "").strip()
+            if not cmd:
+                continue
+
+            try:
+                if cmd == "back":
+                    break
+
+                if cmd == "help":
+                    print()
+                    print(DB_HELP)
+                    print()
+                    continue
+
+                if cmd.startswith("help "):
+                    topic = cmd.split(" ", 1)[1].strip().lower()
+                    print()
+                    print(HELP_TOPICS.get(topic, "No help for that topic."))
+                    print()
+                    continue
+
+                if cmd == "detections":
+                    self.cmd_detail_select()  # Reuse existing detection selection
+                    continue
+
+                if cmd == "purge":
+                    self.db_purge()
+                    continue
+
+                if cmd == "export":
+                    self.db_export()
+                    continue
+
+                print("Unknown command. Type 'help'.")
+            except KeyboardInterrupt:
+                print()
+                raise
+
+    def db_purge(self):
+        """Purge all alerts from database."""
+        try:
+            confirm = input("Are you sure you want to delete ALL stored detections? (yes/no): ").strip().lower()
+            if confirm in ('yes', 'y'):
+                count = self.alerts_db.purge_alerts()
+                print(f"{Fore.GREEN}Deleted {count} detections from database{Style.RESET_ALL}")
+            else:
+                print("Purge cancelled.")
+        except (EOFError, KeyboardInterrupt):
+            print("\nPurge cancelled.")
+
+    def db_export(self):
+        """Export alerts with format selection."""
+        from .selector import select_index
+        from pathlib import Path
+        
+        options = ["CSV format", "JSON format"]
+        selected_idx = select_index(options, title="Export format")
+        
+        if selected_idx is None:
+            return
+        
+        format_type = "csv" if selected_idx == 0 else "json"
+        
+        try:
+            # Use simple default filename
+            filename = f"db.{format_type}"
+            output_path = Path(filename)
+            
+            if format_type == "csv":
+                count = self.alerts_db.export_alerts_csv(output_path)
+            else:
+                count = self.alerts_db.export_alerts_json(output_path)
+            
+            # Clear any cursor positioning issues and print at start of line
+            print(f"\r{Fore.YELLOW}{Style.BRIGHT}[+]{Style.RESET_ALL} {filename} saved to current directory")
+            
+        except (EOFError, KeyboardInterrupt):
+            print("\nExport cancelled.")
+        except Exception as e:
+            print(f"{Fore.RED}Export failed: {e}{Style.RESET_ALL}")

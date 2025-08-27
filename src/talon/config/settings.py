@@ -22,6 +22,7 @@ class TalonState:
         self.output_format: OutputFormat = OutputFormat.CONSOLE
         self.log_file: Optional[Path] = None
         self.alert_stats: AlertStats = AlertStats()
+        self.lookback_minutes: int = 10  # Default lookback in minutes
 
     def active(self) -> Optional[Connection]:
         """Get the currently active connection."""
