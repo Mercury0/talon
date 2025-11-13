@@ -31,14 +31,14 @@ pipx install git+https://github.com/Mercury0/talon
 ```bash
 git clone https://github.com/Mercury0/talon.git
 cd talon
-pip install -e .
+uv sync
 ```
 
 ## Quick Start
 
 1. **Run Talon:**
    ```bash
-   talon
+   uv run talon
    ```
 
 2. **Create a connection:**
@@ -111,16 +111,28 @@ You'll need CrowdStrike Falcon API credentials with the following scopes:
 ```bash
 git clone https://github.com/Mercury0/talon.git
 cd talon
-pip install -e ".[dev]"
+uv sync --dev --all-extras
+```
 
-# Run tests
-pytest
+This installs:
+- Runtime + dev dependencies
+- ruff, mypy, pytest
+- pre-commit hooks
 
-# Format code
-black src/
+### Linting
 
-# Type checking
-mypy src/
+```bash
+# check
+uv run ruff check .
+
+# autofix
+uv run ruff check . --fix
+```
+
+### Type checking
+
+```bash
+uv run mypy src/talon
 ```
 
 ## License
