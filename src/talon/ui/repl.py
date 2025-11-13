@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Set
 
 try:
-    from requests import RequestException
+    from requests import RequestException  # type: ignore[import-untyped]
 except ImportError:
-    RequestException = Exception  # type: ignore[assignment,misc]
+    RequestException = Exception  # type: ignore[assignment]
 
 from ..api.client import FalconClient
 from ..config.settings import TalonState

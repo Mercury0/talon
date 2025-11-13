@@ -6,12 +6,14 @@ import time
 from typing import Any, Dict, List, Optional
 
 try:
-    import requests
+    import requests  # type: ignore[import-untyped]
+    from requests import RequestException as _RequestException  # type: ignore[import-untyped]
+    RequestException = _RequestException
 except ImportError as err:
+    RequestException = Exception
     raise ImportError(
         "This tool requires the 'requests' package. Try: pip install requests"
     ) from err
-
 
 class FalconClient:
     """Client for interacting with CrowdStrike Falcon API."""
