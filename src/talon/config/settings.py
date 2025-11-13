@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..api.client import FalconClient
-from ..models import Connection, AlertFilter, OutputFormat, AlertStats
+from ..models import AlertFilter, AlertStats, Connection, OutputFormat
 
 
 class TalonState:
     """Main application state and configuration."""
-    
+
     def __init__(self):
         self.connections: List[Connection] = []
         self.active_id: Optional[str] = None
@@ -46,14 +46,15 @@ class TalonState:
                     "client_id": c.client_id,
                     "client_secret": c.client_secret,  # Consider encryption
                     "base_url": c.base_url,
-                    "created_at": c.created_at.isoformat()
-                } for c in self.connections
+                    "created_at": c.created_at.isoformat(),
+                }
+                for c in self.connections
             ],
             "active_id": self.active_id,
-            "poll_interval": self.poll_interval
+            "poll_interval": self.poll_interval,
         }
 
-        with open(config_file, 'w') as f:
+        with open(config_file, "w") as f:
             json.dump(data, f, indent=2)
 
     def load_config(self):
@@ -63,7 +64,7 @@ class TalonState:
             return
 
         try:
-            with open(config_file, 'r') as f:
+            with open(config_file, "r") as f:
                 data = json.load(f)
 
             for conn_data in data.get("connections", []):
@@ -72,7 +73,7 @@ class TalonState:
                     client_id=conn_data["client_id"],
                     client_secret=conn_data["client_secret"],
                     base_url=conn_data["base_url"],
-                    created_at=datetime.fromisoformat(conn_data["created_at"])
+                    created_at=datetime.fromisoformat(conn_data["created_at"]),
                 )
                 self.connections.append(conn)
 
@@ -91,24 +92,24 @@ class TalonState:
                     return False
             except ValueError:
                 pass
-        
+
         # Product filtering
         if filter_obj.product:
             prod = str(alert.get("product", "")).upper()
             if filter_obj.product.upper() not in prod:
                 return False
-        
+
         # Hostname filtering
         if filter_obj.hostname:
             dev = alert.get("device", {})
             host = dev.get("hostname", "") if isinstance(dev, dict) else ""
             if filter_obj.hostname.lower() not in host.lower():
                 return False
-        
+
         # Keyword filtering
         if filter_obj.keywords:
             text = f"{alert.get('name', '')} {alert.get('description', '')}".lower()
             if not any(kw.lower() in text for kw in filter_obj.keywords):
                 return False
-        
+
         return True

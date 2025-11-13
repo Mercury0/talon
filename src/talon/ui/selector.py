@@ -1,17 +1,19 @@
 """Interactive selector widget for choosing from lists."""
 
+from __future__ import annotations
+
 import os
 import sys
 from typing import List, Optional
 
 
-def _ansi_move_up(n: int):
+def _ansi_move_up(n: int) -> None:
     """Move cursor up n lines."""
     if n > 0:
         sys.stdout.write(f"\x1b[{n}A")
 
 
-def _ansi_clear_line():
+def _ansi_clear_line() -> None:
     """Clear current line."""
     sys.stdout.write("\x1b[2K\r")
 
@@ -50,16 +52,16 @@ def select_index(options: List[str], title: str = "Connection IDs") -> Optional[
 
     print(title + ":")
     print("Use ↑/↓ or type a number; Enter to select; Esc to cancel.")
-    # initial render
-    idx = 0
+
+    idx: int = 0
+    buf: str = ""  # numeric buffer
+
+    # Initial draw
     for i, opt in enumerate(options, 1):
         prefix = "->" if (i - 1) == idx else "  "
         print(f"{prefix} {i}. {opt}")
 
-    buf = ""  # numeric buffer
-
-    def redraw():
-        # Move cursor up N option lines, then rewrite each line
+    def redraw() -> None:
         _ansi_move_up(len(options))
         for i, opt in enumerate(options, 1):
             prefix = "->" if (i - 1) == idx else "  "
@@ -68,12 +70,25 @@ def select_index(options: List[str], title: str = "Connection IDs") -> Optional[
         sys.stdout.flush()
 
     try:
+        # -------------------------------------------
+        # WINDOWS (msvcrt.getwch) with safe guard
+        # -------------------------------------------
         if os.name == "nt":
-            import msvcrt
+            try:
+                import msvcrt  # type: ignore
+            except ImportError:
+                msvcrt = None  # type: ignore
+
+            if msvcrt is None or not hasattr(msvcrt, "getwch"):
+                # Fallback to numeric selection
+                raise RuntimeError("msvcrt.getwch unavailable")
+
             while True:
-                ch = msvcrt.getwch()
+                ch = msvcrt.getwch()  # type: ignore[attr-defined]
+
                 if ch == "\x03":  # CTRL+C
                     raise KeyboardInterrupt
+
                 if ch in ("\r", "\n"):
                     if buf.isdigit():
                         n = int(buf)
@@ -81,36 +96,45 @@ def select_index(options: List[str], title: str = "Connection IDs") -> Optional[
                         if 1 <= n <= len(options):
                             print()
                             return n - 1
-                        else:
-                            continue
+                        continue
                     print()
                     return idx
+
                 if ch == "\x1b":  # ESC
                     print()
                     return None
+
                 if ch == "\xe0":  # arrow prefix
-                    k = msvcrt.getwch()
-                    if k == "H":   # up
+                    k = msvcrt.getwch()  # type: ignore[attr-defined]
+                    if k == "H":  # up
                         idx = (idx - 1) % len(options)
                         redraw()
-                    elif k == "P": # down
+                    elif k == "P":  # down
                         idx = (idx + 1) % len(options)
                         redraw()
                 elif ch.isdigit():
                     buf += ch
                 else:
                     buf = ""
+
+        # -------------------------------------------
+        # POSIX (termios + tty)
+        # -------------------------------------------
         else:
-            import tty
             import termios
+            import tty
+
             fd = sys.stdin.fileno()
             old = termios.tcgetattr(fd)
+
             try:
                 tty.setraw(fd)
                 while True:
                     ch = sys.stdin.read(1)
+
                     if ch == "\x03":  # CTRL+C
                         raise KeyboardInterrupt
+
                     if ch in ("\r", "\n"):
                         if buf.isdigit():
                             n = int(buf)
@@ -118,34 +142,37 @@ def select_index(options: List[str], title: str = "Connection IDs") -> Optional[
                             if 1 <= n <= len(options):
                                 print()
                                 return n - 1
-                            else:
-                                continue
+                            continue
                         print()
                         return idx
+
                     if ch == "\x1b":
                         nxt = sys.stdin.read(1)
                         if nxt == "[":
                             arrow = sys.stdin.read(1)
-                            if arrow == "A":   # up
+                            if arrow == "A":  # up
                                 idx = (idx - 1) % len(options)
                                 redraw()
-                            elif arrow == "B": # down
+                            elif arrow == "B":  # down
                                 idx = (idx + 1) % len(options)
                                 redraw()
                         else:
                             print()
                             return None
+
                     elif ch.isdigit():
                         buf += ch
                     else:
                         buf = ""
+
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
     except KeyboardInterrupt:
         print()
         raise
     except Exception:
-        # Fallback to simple numeric prompt if anything goes wrong
+        # Fallback to simple numeric selection
         print()
         for i, opt in enumerate(options, 1):
             print(f"{i}. {opt}")
@@ -161,3 +188,5 @@ def select_index(options: List[str], title: str = "Connection IDs") -> Optional[
             return None
         n = int(sel)
         return n - 1 if 1 <= n <= len(options) else None
+
+    return None

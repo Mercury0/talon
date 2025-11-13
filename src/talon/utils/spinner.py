@@ -1,15 +1,15 @@
 """Spinner utility for showing progress."""
 
-import sys
-import time
-import threading
 import itertools
+import sys
+import threading
+import time
 from typing import Optional
 
 try:
     from tqdm import tqdm
-except ImportError:
-    raise ImportError("This tool requires 'tqdm' for the spinner. Try: pip install tqdm")
+except ImportError as err:
+    raise ImportError("This tool requires 'tqdm' for the spinner. Try: pip install tqdm") from err
 
 from .colors import Fore, Style
 
@@ -19,7 +19,8 @@ class TqdmSpinner:
     Bright white pipx-like spinner. Shows only: "⠼ Authenticating…"
     (no elapsed time). Automatically clears itself when stopped.
     """
-    FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+    FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     def __init__(self, message: str = "Authenticating…", interval: float = 0.1):
         self.message = message
@@ -30,14 +31,13 @@ class TqdmSpinner:
     def _run(self):
         frames = itertools.cycle(self.FRAMES)
         # Only description; leave=False to remove on close. Disable if not a TTY.
-        with tqdm(total=0,
-                  bar_format="{desc}",
-                  leave=False,
-                  disable=not sys.stdout.isatty()) as t:
+        with tqdm(total=0, bar_format="{desc}", leave=False, disable=not sys.stdout.isatty()) as t:
             while not self._stop.is_set():
                 frame = next(frames)
                 # bright white desc; no elapsed
-                t.set_description_str(Fore.WHITE + Style.BRIGHT + f"{frame} {self.message}" + Style.RESET_ALL)
+                t.set_description_str(
+                    Fore.WHITE + Style.BRIGHT + f"{frame} {self.message}" + Style.RESET_ALL
+                )
                 t.update(0)
                 time.sleep(self.interval)
 

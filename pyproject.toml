@@ -39,8 +39,7 @@ dependencies = [
 dev = [
     "pytest>=6.0",
     "pytest-cov",
-    "black",
-    "flake8",
+    "ruff",
     "mypy",
 ]
 
@@ -58,12 +57,32 @@ where = ["src"]
 [tool.setuptools.package-dir]
 "" = "src"
 
-[tool.black]
-line-length = 88
-target-version = ['py38']
+# -------------------------------
+#   Ruff (formatter + linter)
+# -------------------------------
+[tool.ruff]
+line-length = 100
+src = ["src"]
+target-version = "py38"
 
+# Enable flake8-bugbear, isort, flake8-comprehensions, etc.
+lint.select = ["E", "F", "W", "B", "C4", "I"]
+
+# Allow long REPL strings, JSON blobs, and API responses
+lint.ignore = ["E501"]  # ruff-format handles line wrapping
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# -------------------------------
+#   Mypy
+# -------------------------------
 [tool.mypy]
-python_version = "3.8"
-warn_return_any = true
+python_version = "3.9"
+ignore_missing_imports = true
 warn_unused_configs = true
-disallow_untyped_defs = true
+disallow_untyped_defs = false
+strict = false
+mypy_path = ["src"]

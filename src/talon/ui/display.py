@@ -1,6 +1,7 @@
 """Display utilities for banners and UI elements."""
 
 import random
+
 from ..utils.colors import Fore, Style
 
 VERSION = "0.1.0"
@@ -29,14 +30,7 @@ def print_banner_lines():
         for line in lines[:-1]:
             print(Fore.WHITE + line + Style.RESET_ALL)
         # last line + bold version
-        print(
-            Fore.WHITE
-            + lines[-1]
-            + " "
-            + Style.BRIGHT
-            + VERSION
-            + Style.RESET_ALL
-        )
+        print(Fore.WHITE + lines[-1] + " " + Style.BRIGHT + VERSION + Style.RESET_ALL)
     print()  # trailing blank
     print(Fore.CYAN + Style.BRIGHT + " 2025 @markfox" + Style.RESET_ALL)
 
@@ -45,7 +39,12 @@ def print_banner_with_intro():
     """Print banner with interactive mode intro."""
     print_banner_lines()
     # Yellow + bold
-    print(Fore.YELLOW + Style.BRIGHT + "[*] Starting interactive mode. Use CTRL+d to exit." + Style.RESET_ALL)
+    print(
+        Fore.YELLOW
+        + Style.BRIGHT
+        + "[*] Starting interactive mode. Use CTRL+d to exit."
+        + Style.RESET_ALL
+    )
 
 
 def generate_conn_id() -> str:
@@ -60,7 +59,7 @@ def mask_secret(val: str) -> str:
         return ""
     if len(val) <= 6:
         return "*" * len(val)
-    return val[:2] + "*" * (len(val)-4) + val[-2:]
+    return val[:2] + "*" * (len(val) - 4) + val[-2:]
 
 
 def _returned_to_root():
